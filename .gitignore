@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+.pytest_cache/
+
+# Node
+node_modules/
+.npm/
+
+# Build outputs
+frontend/dist/
+remotion/out/
+
+# Environment
+.env
+*.env.local
+
+# Temp files
+/tmp/
+*.mp4
+*.wav
+*.mp3
+backend/static/*.mp4
+backend/static/*.wav
+backend/static/*.mp3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Remotion session files
+remotion/src/DiagramAnimation_*.tsx
