@@ -188,16 +188,6 @@ async def generate(
             finally:
                 await queue.put(None)  # sentinel
 
-        # Determine which diagram to animate (pick first diagram if available)
-        diagrams = chapter_json.get("diagrams", [])
-        first_diagram = diagrams[0] if diagrams else {
-            "type": "concept diagram",
-            "concept": chapter_json.get("chapter_name", "Chapter Concept"),
-            "description": "Key concept from this chapter",
-            "labels": chapter_json.get("key_concepts", [])[:5],
-            "animation_hint": "Show key concepts appearing one by one"
-        }
-
         loop = asyncio.get_running_loop()
         tasks = [
             asyncio.create_task(run_task(
@@ -209,7 +199,9 @@ async def generate(
                 "audio"
             )),
             asyncio.create_task(run_task(
-                generate_diagram_video(first_diagram, language, session_id),
+                # Two-step pipeline: Gemini picks concept + writes script,
+                # then Gemini writes Manim code from that script.
+                generate_diagram_video(chapter_json, language, session_id),
                 "video"
             )),
         ]

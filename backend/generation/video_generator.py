@@ -1,15 +1,18 @@
 """
-Video Generator — two-step pipeline inspired by cerebralvalley:
+Video Generator — two-step pipeline (cerebralvalley approach):
 
   Step 1  Gemini reads the chapter JSON and writes a structured 3-step
-          concept-explanation SCRIPT (JSON).  This controls exactly what
-          text will appear on screen, keeping lines short and safe.
+          concept script in the student's language (Kannada, Hindi, etc.).
+          Gemini acts as the "user typing the prompt" that cerebralvalley
+          requires — AI generates the concept description automatically.
 
-  Step 2  Gemini writes a Manim scene from that script.  The scene uses
-          ONLY FadeIn() for text (Write() crashes on Indic Unicode glyphs)
-          and simple geometric shapes — no complex diagram recreation.
+  Step 2  Gemini writes a Manim scene from that script.
+          Text is shown with self.add() (full opacity, instant) instead of
+          FadeIn() — Cairo on Windows crashes when rendering Indic glyphs at
+          partial opacity during FadeIn interpolation, but renders them fine
+          at opacity=1. Shapes still use Create() for visual interest.
 
-- Pure Python / Manim Community Edition (no Node.js)
+- Pure Python / Manim Community Edition
 - asyncio.Lock serialises renders so concurrent sessions don't collide
 """
 
@@ -49,7 +52,7 @@ LANGUAGE_FONTS = {
     "ta-IN": _INDIC_FONT,
     "te-IN": _INDIC_FONT,
     "mr-IN": _INDIC_FONT,
-    "en-IN": "",          # English — Manim default font is fine
+    "en-IN": "",
 }
 
 
@@ -60,48 +63,51 @@ def _get_client() -> genai.Client:
     return _client
 
 
-# ── Step 1: Concept script prompt ────────────────────────────────────────────
+# ── Step 1: Concept script prompt ─────────────────────────────────────────────
+# Gemini acts as the "user typing the prompt" that cerebralvalley needs.
+# Produces structured JSON so the Manim prompt has exact, length-controlled text.
 
 SCRIPT_PROMPT = """\
 You are VidyaChitra, an AI tutor for Indian school students.
+Your job: read the chapter summary below and create a 3-step visual
+explanation of the MOST IMPORTANT concept from that chapter.
 
-Read this chapter and pick the SINGLE most important concept that can be
-explained in 3 clear visual steps. Write a structured animation script for it.
-
-Chapter   : {chapter_name}
-Concepts  : {key_concepts}
-Language  : {language_name}
-Summary   : {summary_excerpt}
+Chapter name : {chapter_name}
+Chapter summary (this is the chapter's own language — use the SAME language
+for ALL your output):
+---
+{summary_excerpt}
+---
 
 Respond with ONLY a valid JSON object — no other text:
 
 {{
-  "concept_english": "<concept name in English — used for logging only>",
-  "concept_title":   "<concept title in {language_name} — max 25 chars>",
+  "concept_english": "<concept name in English — for logging only>",
   "steps": [
     {{
-      "heading":  "<step heading in {language_name} — MAX 22 chars>",
-      "body":     "<1-sentence explanation in {language_name} — MAX 60 chars>",
-      "shape":    "<one of: none | arrow | circle | rectangle | coil>"
+      "heading": "<step heading — MAX 20 chars — write in the SAME language as the summary>",
+      "body":    "<1-sentence explanation — MAX 50 chars — same language as summary — NO \\n>",
+      "shape":   "<one of: none | arrow | circle | rectangle | coil>"
     }}
   ]
 }}
 
-Rules:
+CRITICAL:
 - Exactly 3 steps
-- ALL heading and body text MUST be in {language_name}
-- heading ≤ 22 characters (hard limit — it goes on screen)
-- body    ≤ 60 characters (hard limit — split with \\n if needed)
+- heading and body MUST be in the same language as the summary above (NOT English, unless the summary is in English)
+- heading ≤ 20 characters, body ≤ 50 characters
 - shape must be exactly one of: none, arrow, circle, rectangle, coil
 - Respond with ONLY the JSON object\
 """
 
 
 # ── Step 2: Manim code prompt ─────────────────────────────────────────────────
+# KEY: use self.add(text) not FadeIn(text).
+# Cairo on Windows crashes rendering Indic glyphs at partial opacity (FadeIn
+# interpolates 0→1).  self.add() places text at opacity=1 instantly — no crash.
 
 MANIM_PROMPT = """\
-You are a Manim Community Edition expert.
-Write a complete scene that animates this concept explanation.
+You are a Manim Community Edition expert writing a concept-explanation video.
 
 SCRIPT (JSON):
 {script_json}
@@ -112,41 +118,51 @@ Font     : {font_name}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 HARD RULES — any violation = crash
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1.  Class name: DiagramScene(Scene)
+1.  Class name must be exactly: DiagramScene(Scene)
 2.  ONLY import: from manim import *
-3.  First line of construct():  self.camera.background_color = "#0E1117"
-4.  NEVER use Write() or DrawBorderThenFill() on Text — they CRASH on
-    Unicode/Indic glyphs.  Use FadeIn() for EVERY Text object.
-    CORRECT: self.play(FadeIn(text, run_time=1))
-    WRONG:   self.play(Write(text, run_time=1))
-5.  Every Text() MUST include  font="{font_name}"
+3.  First line of construct(): self.camera.background_color = "#0E1117"
+4.  NEVER use Write(), FadeIn(), or DrawBorderThenFill() on Text objects.
+    Text must be shown with self.add() — this avoids the partial-opacity
+    Cairo crash that occurs with Indic Unicode glyphs on Windows.
+    CORRECT: self.add(heading, body)
+    WRONG:   self.play(FadeIn(heading))   ← CRASHES
+    WRONG:   self.play(Write(heading))    ← CRASHES
+5.  Every Text() MUST include font="{font_name}"
 6.  NEVER use MathTex or Tex
-7.  run_time must be > 0  (minimum 0.1)
-8.  Text max 22 chars per line — use "\\n" to split longer strings
+7.  run_time must be > 0 (minimum 0.1)
+8.  Do NOT put \\n inside Text strings — keep each string on one line
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ANIMATION STRUCTURE (one block per step)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-For EACH step in steps[]:
-  a. Create heading  Text at top:  font_size=38, color=YELLOW, .to_edge(UP)
-  b. Create body     Text below:   font_size=26, color=WHITE,
-                                   .next_to(heading, DOWN, buff=0.6)
-  c. If shape == "arrow"     : arr = Arrow(LEFT*2, RIGHT*2, color=RED, buff=0)
-     If shape == "circle"    : shp = Circle(radius=1.2, color=BLUE)
-     If shape == "rectangle" : shp = Rectangle(width=3.5, height=1.8, color=BLUE)
-     If shape == "coil"      : shp = Rectangle(width=3, height=0.35, color=ORANGE)
-     If shape == "none"      : (no shape)
-  d. self.play(FadeIn(heading, run_time=0.8), FadeIn(body, run_time=0.8))
-     If shape != none: self.play(Create(shp, run_time=1.2))
-  e. self.wait(2)
-  f. Fade out ALL objects from this step before the next step
+FONT = "{font_name}"
 
-After all steps:
-  self.play(FadeOut(*self.mobjects, run_time=0.8))
-  self.wait(1)
+For EACH step in steps[]:
+  a. heading = Text(step.heading, font_size=40, color=YELLOW, font=FONT).to_edge(UP)
+  b. body    = Text(step.body,    font_size=26, color=WHITE,  font=FONT)
+               body.next_to(heading, DOWN, buff=0.6)
+  c. self.add(heading, body)          ← instant, full opacity, no crash
+  d. shape animation (runs AFTER text is visible):
+       "arrow"     → arr = Arrow(LEFT*2, RIGHT*2, color=RED, buff=0)
+                     self.play(Create(arr, run_time=1.2))
+       "circle"    → shp = Circle(radius=1.2, color=BLUE)
+                     self.play(Create(shp, run_time=1.2))
+       "rectangle" → shp = Rectangle(width=3.5, height=1.8, color=BLUE)
+                     self.play(Create(shp, run_time=1.2))
+       "coil"      → shp = Rectangle(width=3.2, height=0.35, color=ORANGE)
+                     self.play(Create(shp, run_time=1.2))
+       "none"      → (no shape)
+  e. self.wait(2)
+  f. self.remove(heading, body)       ← instant remove for text
+     if shape was created: self.play(FadeOut(shp, run_time=0.5))
+
+After all 3 steps:
+  if self.mobjects:
+      self.play(FadeOut(*self.mobjects, run_time=0.6))
+  self.wait(0.5)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-EXAMPLE (3 steps, Kannada, font="Nirmala UI")
+EXAMPLE (Kannada, font="Nirmala UI")
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```python
 from manim import *
@@ -156,40 +172,43 @@ class DiagramScene(Scene):
         self.camera.background_color = "#0E1117"
         FONT = "Nirmala UI"
 
-        # Step 1
-        h1 = Text("ಕಾಂತೀಯ ಪ್ರಭಾವ", font_size=38, color=YELLOW, font=FONT).to_edge(UP)
-        b1 = Text("ವಿದ್ಯುತ್ ಪ್ರವಾಹ ಕಾಂತೀಯ\\nಕ್ಷೇತ್ರ ಸೃಷ್ಟಿಸುತ್ತದೆ",
-                  font_size=26, color=WHITE, font=FONT).next_to(h1, DOWN, buff=0.6)
-        coil = Rectangle(width=3, height=0.35, color=ORANGE)
-        self.play(FadeIn(h1, run_time=0.8), FadeIn(b1, run_time=0.8))
+        # Step 1 — text via self.add(), shape via Create()
+        h1 = Text("ಕಾಂತೀಯ ಪ್ರಭಾವ", font_size=40, color=YELLOW, font=FONT).to_edge(UP)
+        b1 = Text("ವಿದ್ಯುತ್ ಪ್ರವಾಹ ಕಾಂತ ಕ್ಷೇತ್ರ ಸೃಷ್ಟಿಸುತ್ತದೆ", font_size=26, color=WHITE, font=FONT)
+        b1.next_to(h1, DOWN, buff=0.6)
+        self.add(h1, b1)
+        coil = Rectangle(width=3.2, height=0.35, color=ORANGE)
         self.play(Create(coil, run_time=1.2))
         self.wait(2)
-        self.play(FadeOut(h1, b1, coil, run_time=0.6))
+        self.remove(h1, b1)
+        self.play(FadeOut(coil, run_time=0.5))
 
         # Step 2
-        h2 = Text("ಬಲಗೈ ನಿಯಮ", font_size=38, color=YELLOW, font=FONT).to_edge(UP)
-        b2 = Text("ಹೆಬ್ಬೆರಳು ಪ್ರವಾಹ ದಿಕ್ಕು\\nತೋರಿಸುತ್ತದೆ",
-                  font_size=26, color=WHITE, font=FONT).next_to(h2, DOWN, buff=0.6)
+        h2 = Text("ಬಲಗೈ ನಿಯಮ", font_size=40, color=YELLOW, font=FONT).to_edge(UP)
+        b2 = Text("ಹೆಬ್ಬೆರಳು ಪ್ರವಾಹ ದಿಕ್ಕು ತೋರಿಸುತ್ತದೆ", font_size=26, color=WHITE, font=FONT)
+        b2.next_to(h2, DOWN, buff=0.6)
+        self.add(h2, b2)
         arr = Arrow(LEFT*2, RIGHT*2, color=RED, buff=0)
-        self.play(FadeIn(h2, run_time=0.8), FadeIn(b2, run_time=0.8))
         self.play(Create(arr, run_time=1.2))
         self.wait(2)
-        self.play(FadeOut(h2, b2, arr, run_time=0.6))
+        self.remove(h2, b2)
+        self.play(FadeOut(arr, run_time=0.5))
 
         # Step 3
-        h3 = Text("ಉಪಯೋಗಗಳು", font_size=38, color=YELLOW, font=FONT).to_edge(UP)
-        b3 = Text("ವಿದ್ಯುತ್ ಮೋಟಾರ್ ಮತ್ತು\\nಜನರೇಟರ್ ಈ ತತ್ವ ಬಳಸುತ್ತವೆ",
-                  font_size=26, color=WHITE, font=FONT).next_to(h3, DOWN, buff=0.6)
-        self.play(FadeIn(h3, run_time=0.8), FadeIn(b3, run_time=0.8))
+        h3 = Text("ಉಪಯೋಗಗಳು", font_size=40, color=YELLOW, font=FONT).to_edge(UP)
+        b3 = Text("ವಿದ್ಯುತ್ ಮೋಟಾರ್ ಈ ತತ್ವ ಬಳಸುತ್ತದೆ", font_size=26, color=WHITE, font=FONT)
+        b3.next_to(h3, DOWN, buff=0.6)
+        self.add(h3, b3)
         self.wait(2)
-        self.play(FadeOut(h3, b3, run_time=0.6))
+        self.remove(h3, b3)
 
-        self.play(FadeOut(*self.mobjects, run_time=0.8))
-        self.wait(1)
+        if self.mobjects:
+            self.play(FadeOut(*self.mobjects, run_time=0.6))
+        self.wait(0.5)
 ```
 
 Now write the ACTUAL scene for the script JSON above in {language_name}.
-Remember: FadeIn() for ALL Text objects.  font="{font_name}" on every Text().
+Use self.add() for all Text. font="{font_name}" on every Text().
 Respond with ONLY the Python code in a ```python ... ``` block.\
 """
 
@@ -206,15 +225,17 @@ ORIGINAL CODE:
 ```
 
 Common fixes:
-- Replace ALL Write(obj) / DrawBorderThenFill(obj) on Text with FadeIn(obj, run_time=1)
+- Replace FadeIn(text_obj) / Write(text_obj) with self.add(text_obj) — FadeIn/Write
+  crash with Indic Unicode glyphs on Windows due to partial-opacity Cairo rendering
 - Replace MathTex/Tex with Text()
 - Ensure every run_time > 0 (minimum 0.1)
 - VGroup children must be Mobjects, not strings
-- self.camera.background_color must be set before any self.play()
+- self.camera.background_color must be the first line in construct()
 - Only 'from manim import *' is allowed — remove all other imports
-- FadeOut(*self.mobjects) fails if mobjects is empty — guard with 'if self.mobjects'
-- Arrow(start, end) needs Manim directions (LEFT, RIGHT, UP, DOWN) or np.array([x,y,0])
-- Shorten any Text string that exceeds 22 chars per line
+- Guard FadeOut(*self.mobjects) with: if self.mobjects: self.play(FadeOut(...))
+- Arrow(start, end) needs Manim directions: LEFT, RIGHT, UP, DOWN
+- Remove any \\n from inside Text() string arguments
+- Every Text() must have font="<fontname>" argument
 
 Return ONLY the corrected Python code in a ```python ... ``` block.\
 """
@@ -244,8 +265,8 @@ def _run_manim(script_path: str, media_dir: str) -> tuple[bool, str, str]:
     if not shutil.which("ffmpeg"):
         return False, "", (
             "FFmpeg not found in PATH. "
-            "Install: Windows → https://www.gyan.dev/ffmpeg/builds/ "
-            "| macOS → brew install ffmpeg | Ubuntu → apt install ffmpeg"
+            "Windows: https://www.gyan.dev/ffmpeg/builds/ — add bin/ to PATH. "
+            "macOS: brew install ffmpeg  |  Ubuntu: apt install ffmpeg"
         )
     try:
         result = subprocess.run(
@@ -273,43 +294,40 @@ def _run_manim(script_path: str, media_dir: str) -> tuple[bool, str, str]:
 
 async def generate_diagram_video(chapter_json: dict, language_code: str, session_id: str) -> str:
     """
-    Two-step pipeline:
-      1. Gemini reads chapter_json → produces a 3-step concept script (JSON)
-      2. Gemini writes Manim code from that script → rendered to MP4
+    Two-step pipeline (cerebralvalley approach):
+      1. Gemini reads chapter_json → picks concept → writes 3-step script in
+         the student's language (Kannada/Hindi/etc.) — Gemini acts as the
+         "user typing the concept prompt" that cerebralvalley needs manually.
+      2. Gemini writes a Manim scene from that script. Text shown via
+         self.add() (opacity=1 instantly) to avoid FadeIn/Cairo Indic crash.
 
-    Args:
-        chapter_json: Consolidated chapter JSON from pdf_processor.
-        language_code: BCP-47 code (e.g. "kn-IN").
-        session_id: Unique session ID for temp file naming.
-
-    Returns:
-        Public URL of the rendered MP4.
+    Returns public URL of the rendered MP4.
     """
     client = _get_client()
     language_name = LANGUAGE_NAMES.get(language_code, "English")
     font_name = LANGUAGE_FONTS.get(language_code, "Nirmala UI")
 
-    chapter_name   = chapter_json.get("chapter_name", "Chapter")
-    key_concepts   = ", ".join(chapter_json.get("key_concepts", [])[:12])
-    summary_excerpt = chapter_json.get("summary_text", "")[:600]
+    chapter_name    = chapter_json.get("chapter_name", "Chapter")
+    # Use summary_text as the primary source — it's already in the student's
+    # language (Kannada/Hindi/etc.) so Gemini will write the script in that
+    # language too. key_concepts are in English and confuse the model.
+    summary_excerpt = chapter_json.get("summary_text", "")[:800]
 
-    # ── Step 1: Generate concept script ──────────────────────────────────────
-    print(f"[video_generator] Step 1 — generating concept script ({language_name})...")
+    # ── Step 1: Gemini generates the concept script ───────────────────────────
+    print(f"[video_generator] Step 1 — concept script ({language_name})...")
     script_resp = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=[types.Part.from_text(text=SCRIPT_PROMPT.format(
             chapter_name=chapter_name,
-            key_concepts=key_concepts,
-            language_name=language_name,
             summary_excerpt=summary_excerpt,
         ))]
     )
     script = _extract_json(script_resp.text)
     concept = script.get("concept_english", chapter_name)
-    print(f"[video_generator] Concept selected: {concept}")
+    print(f"[video_generator] Concept: {concept}")
 
-    # ── Step 2: Generate Manim code from script ───────────────────────────────
-    print(f"[video_generator] Step 2 — generating Manim scene...")
+    # ── Step 2: Gemini writes Manim scene from the script ─────────────────────
+    print(f"[video_generator] Step 2 — Manim scene generation...")
     manim_resp = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=[types.Part.from_text(text=MANIM_PROMPT.format(
@@ -334,7 +352,7 @@ async def generate_diagram_video(chapter_json: dict, language_code: str, session
         )
 
         if not success:
-            print(f"[video_generator] First render failed:\n{error_msg[:500]}")
+            print(f"[video_generator] First render failed:\n{error_msg[:600]}")
             print("[video_generator] Asking Gemini to fix...")
             fix_resp = client.models.generate_content(
                 model="gemini-2.5-flash",

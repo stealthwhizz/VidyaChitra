@@ -141,7 +141,16 @@ def process_pdf(pdf_path: str, board: str = "Unknown", language: str = "auto", c
         result = _make_fallback_result(pdf_path, pages_to_process)
 
     # ── Auto-detected metadata (fall back to passed-in values if missing) ────
-    detected_language = result.get("detected_language") or (language if language != "auto" else "en-IN")
+    _LANG_NORMALIZE = {
+        "kannada": "kn-IN", "kn": "kn-IN", "kn-in": "kn-IN",
+        "hindi":   "hi-IN", "hi": "hi-IN", "hi-in": "hi-IN",
+        "tamil":   "ta-IN", "ta": "ta-IN", "ta-in": "ta-IN",
+        "telugu":  "te-IN", "te": "te-IN", "te-in": "te-IN",
+        "marathi": "mr-IN", "mr": "mr-IN", "mr-in": "mr-IN",
+        "english": "en-IN", "en": "en-IN", "en-in": "en-IN",
+    }
+    raw_lang = (result.get("detected_language") or "").strip()
+    detected_language = _LANG_NORMALIZE.get(raw_lang.lower(), raw_lang) or (language if language != "auto" else "en-IN")
     detected_board    = result.get("detected_board")    or board
     detected_class    = result.get("detected_class_level") or class_level
 

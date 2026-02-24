@@ -2,25 +2,20 @@
 Vernacular Narrator — generates Indian-language audio narration of the chapter.
 
 1. Uses Gemini 2.5 Flash to write a teacher-style spoken summary in the target language.
-2. Synthesises audio using Sarvam AI Bulbul v1 (primary — best for Indian languages).
-3. Falls back to Gemini TTS (gemini-2.5-flash-preview-tts) if Sarvam is unavailable.
-4. Uploads the resulting WAV file to GCS (or local static dir) and returns the URL.
+2. Synthesises audio using Gemini TTS (gemini-2.5-flash-preview-tts).
+   Returns raw 16-bit PCM at 24 kHz mono — wrapped in a WAV container before saving.
+3. Uploads the resulting WAV file to GCS (or local static dir) and returns the URL.
 """
 
-import base64
 import io
 import os
 import tempfile
 import wave
-from typing import Optional
 
-import httpx
 from google import genai
 from google.genai import types
 
 from utils.gcs_uploader import upload_file
-
-SARVAM_TTS_URL = "https://api.sarvam.ai/text-to-speech"
 
 _gemini_client: genai.Client | None = None
 
@@ -33,17 +28,7 @@ LANGUAGE_NAMES = {
     "en-IN": "English",
 }
 
-# Sarvam Bulbul v1 speaker mapping
-SARVAM_SPEAKERS = {
-    "kn-IN": "arvind",
-    "hi-IN": "meera",
-    "ta-IN": "arjun",
-    "te-IN": "pavithra",
-    "mr-IN": "amol",
-    "en-IN": "meera",
-}
-
-# Gemini TTS voices — used as fallback
+# Gemini TTS voice per language
 GEMINI_VOICES = {
     "kn-IN": "Kore",
     "hi-IN": "Kore",
@@ -112,57 +97,6 @@ def _pcm_to_wav(pcm_data: bytes, sample_rate: int = 24000, channels: int = 1, sa
     return buf.getvalue()
 
 
-def _call_sarvam_tts(text: str, language_code: str) -> Optional[bytes]:
-    """
-    Call Sarvam AI Bulbul v1 TTS via its REST API (httpx).
-    Returns raw audio bytes (WAV-encoded by Sarvam), or None on failure.
-    """
-    api_key = os.environ.get("SARVAM_API_KEY", "")
-    if not api_key:
-        print("[vernacular_narrator] SARVAM_API_KEY not set, skipping Sarvam TTS")
-        return None
-
-    speaker = SARVAM_SPEAKERS.get(language_code, "meera")
-    print(f"[vernacular_narrator] Calling Sarvam TTS (speaker={speaker}, lang={language_code})...")
-
-    # Sarvam TTS accepts up to ~500 chars per request — split into chunks
-    chunks = _split_text(text, max_chars=450)
-    all_audio = b""
-
-    headers = {
-        "api-subscription-key": api_key,
-        "Content-Type": "application/json",
-    }
-
-    for i, chunk in enumerate(chunks):
-        payload = {
-            "inputs": [chunk],
-            "target_language_code": language_code,
-            "speaker": speaker,
-            "model": "bulbul:v1",
-            "enable_preprocessing": True,
-            "pace": 1.2,
-            "loudness": 1.5,
-        }
-        try:
-            resp = httpx.post(SARVAM_TTS_URL, json=payload, headers=headers, timeout=30)
-            if resp.status_code != 200:
-                print(f"[vernacular_narrator] Sarvam chunk {i+1} HTTP {resp.status_code}: {resp.text[:300]}")
-                return None
-            data = resp.json()
-            audios = data.get("audios", [])
-            if audios:
-                all_audio += base64.b64decode(audios[0])
-            else:
-                print(f"[vernacular_narrator] Sarvam chunk {i+1}: empty audios")
-                return None
-        except Exception as e:
-            print(f"[vernacular_narrator] Sarvam TTS chunk {i+1} failed: {e}")
-            return None
-
-    return all_audio if all_audio else None
-
-
 def _call_gemini_tts(text: str, language_code: str) -> bytes:
     """
     Fallback: Call Gemini TTS (gemini-2.5-flash-preview-tts) and return WAV bytes.
@@ -191,23 +125,6 @@ def _call_gemini_tts(text: str, language_code: str) -> bytes:
     return _pcm_to_wav(pcm_data)
 
 
-def _split_text(text: str, max_chars: int = 450) -> list[str]:
-    """Split text into chunks at sentence boundaries."""
-    sentences = text.replace("।", ".").split(".")
-    chunks: list[str] = []
-    current = ""
-    for sentence in sentences:
-        candidate = (current + ". " + sentence).strip() if current else sentence.strip()
-        if len(candidate) <= max_chars:
-            current = candidate
-        else:
-            if current:
-                chunks.append(current)
-            current = sentence.strip()
-    if current:
-        chunks.append(current)
-    return chunks or [text[:max_chars]]
-
 
 def generate_narration(chapter_json: dict, language_code: str) -> str:
     """
@@ -227,12 +144,8 @@ def generate_narration(chapter_json: dict, language_code: str) -> str:
     narration_text = _generate_narration_text(chapter_json, language_code)
     print(f"[vernacular_narrator] Narration script ({len(narration_text)} chars) ready")
 
-    # Step 2: Synthesise audio — Sarvam primary, Gemini TTS fallback
-    audio_bytes: Optional[bytes] = _call_sarvam_tts(narration_text, language_code)
-
-    if audio_bytes is None:
-        print("[vernacular_narrator] Falling back to Gemini TTS...")
-        audio_bytes = _call_gemini_tts(narration_text, language_code)
+    # Step 2: Synthesise audio with Gemini TTS
+    audio_bytes = _call_gemini_tts(narration_text, language_code)
 
     print(f"[vernacular_narrator] Audio ready ({len(audio_bytes)} bytes)")
 
