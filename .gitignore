@@ -40,3 +40,6 @@ Thumbs.db
 
 # Remotion session files
 remotion/src/DiagramAnimation_*.tsx
+
+
+.claude/
