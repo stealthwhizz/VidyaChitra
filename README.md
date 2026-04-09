@@ -21,6 +21,7 @@ Most existing EdTech solutions are English-first and ignore regional language st
 ## The Solution
 
 VidyaChitra lets a student upload any chapter PDF from their school textbook and instantly receives five personalised study materials, all streamed live as they are generated:
+![VidyaChitra](https://www.youtube.com/watch?v=xJ32OJfpwWw)
 
 1. **Chapter Summary** — A teacher-style explanation of the entire chapter, written in the textbook's own language, covering every key concept and formula. It appears on screen within seconds of uploading.
 
